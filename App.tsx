@@ -6,13 +6,22 @@ import { BackHandler, Pressable, ScrollView, Text, View } from 'react-native';
 import type { ImageSourcePropType } from 'react-native';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { buildProfile, defaultDemo, initialLooks, initialPieces, matchOutfit, sampleLook, samplePiece } from './src/model';
-import type { Category, Piece } from './src/model';
-import { DemoProgress, tasks } from './src/motion';
+import { buildProfile, matchOutfit } from './src/model';
+import type { Category, Inspiration, Piece } from './src/model';
+import { TaskProgress, tasks } from './src/motion';
 import type { Task } from './src/motion';
 import { Closet, Library, Outfits, Primary, StyleProfile } from './src/screens';
-import { LookLinkForm, MatchReasons, PieceDetails, Sheet, SheetOption, StyleCues } from './src/sheets';
-import { colors, s } from './src/theme';
+import {
+  initialLooks,
+  initialPieces,
+  initialSelectedLookIds,
+  outfitTemplates,
+  sampleLook,
+  samplePiece,
+  styleTemplates,
+} from './src/sample-data';
+import { LookLinkForm, MatchReasons, PieceDetails, Sheet, StyleCues } from './src/sheets';
+import { colors, styles } from './src/theme';
 
 const tabs = [
   { id: 'library', label: 'Library', icon: 'albums-outline' },
@@ -27,26 +36,42 @@ type SheetState =
   | { type: 'piece'; piece: Piece }
   | { type: 'progress'; task: Task; media: ImageSourcePropType[]; complete: () => void };
 
-function Studio() {
+type StyleSession = {
+  selectedLookIds: string[];
+  savedLook: Inspiration | null;
+  addedPiece: Piece | null;
+  prefersCasual: boolean;
+};
+
+const initialSession: StyleSession = {
+  selectedLookIds: initialSelectedLookIds,
+  savedLook: null,
+  addedPiece: null,
+  prefersCasual: false,
+};
+
+function StyleWorkspace() {
   const { bottom } = useSafeAreaInsets();
-  const [demo, setDemo] = useState(defaultDemo);
+  const [session, setSession] = useState(initialSession);
   const [tab, setTab] = useState<Tab>('library');
   const [sheet, setSheet] = useState<SheetState | null>(null);
   const [filter, setFilter] = useState<'All' | Category>('All');
   const scroll = useRef<ComponentRef<typeof ScrollView>>(null);
-  const looks = demo.lookLink ? [...initialLooks, { ...sampleLook, source: demo.lookLink }] : initialLooks;
-  const closet = demo.pieceAdded ? [samplePiece, ...initialPieces] : initialPieces;
-  const selected = looks.filter(look => demo.selectedIds.includes(look.id));
-  const originalProfile = buildProfile(selected, false);
-  const casualProfile = buildProfile(selected, true);
-  const originalOutfit = originalProfile ? matchOutfit(originalProfile, closet) : undefined;
-  const casualOutfit = originalOutfit && casualProfile
-    ? matchOutfit(casualProfile, closet, originalOutfit.id)
-    : undefined;
-  const casualApplied = demo.prefersCasual && Boolean(casualOutfit);
+  const looks = session.savedLook ? [...initialLooks, session.savedLook] : initialLooks;
+  const closet = session.addedPiece ? [session.addedPiece, ...initialPieces] : initialPieces;
+  const selected = looks.filter(look => session.selectedLookIds.includes(look.id));
+  const originalProfile = buildProfile(selected, styleTemplates);
+  const casualProfile = buildProfile(selected, styleTemplates, 'Casual');
+  const originalOutfit = originalProfile ? matchOutfit(originalProfile, closet, outfitTemplates) : undefined;
+  const casualOutfit =
+    originalOutfit && casualProfile
+      ? matchOutfit(casualProfile, closet, outfitTemplates, originalOutfit.id)
+      : undefined;
+  const casualApplied = session.prefersCasual && Boolean(casualOutfit);
   const profile = casualApplied ? casualProfile : originalProfile;
   const outfit = casualApplied ? casualOutfit : originalOutfit;
-  const casualAction = originalOutfit?.traits.formality === 'Casual' ? 'Try another casual outfit' : 'Make it more casual';
+  const casualAction =
+    originalOutfit?.traits.formality === 'Casual' ? 'Try another casual outfit' : 'Make it more casual';
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -64,11 +89,11 @@ function Studio() {
   }
 
   function toggleLook(id: string) {
-    setDemo(current => ({
+    setSession(current => ({
       ...current,
-      selectedIds: current.selectedIds.includes(id)
-        ? current.selectedIds.filter(selectedId => selectedId !== id)
-        : [...current.selectedIds, id],
+      selectedLookIds: current.selectedLookIds.includes(id)
+        ? current.selectedLookIds.filter(selectedId => selectedId !== id)
+        : [...current.selectedLookIds, id],
     }));
   }
 
@@ -86,25 +111,33 @@ function Studio() {
 
   function addLook(source: URL) {
     run('importLook', [sampleLook.image], () => {
-      setDemo(current => current.lookLink ? current : {
-        ...current,
-        lookLink: source,
-        selectedIds: [...current.selectedIds, sampleLook.id],
-      });
+      setSession(current =>
+        current.savedLook
+          ? current
+          : {
+              ...current,
+              savedLook: { ...sampleLook, source },
+              selectedLookIds: [...current.selectedLookIds, sampleLook.id],
+            },
+      );
       scroll.current?.scrollTo({ y: 0 });
     });
   }
 
   function addPiece() {
     run('addPiece', [samplePiece.image], () => {
-      setDemo(current => current.pieceAdded ? current : { ...current, pieceAdded: true });
+      setSession(current => (current.addedPiece ? current : { ...current, addedPiece: samplePiece }));
       setFilter('All');
       scroll.current?.scrollTo({ y: 0 });
     });
   }
 
   function buildStyleProfile() {
-    run('buildProfile', selected.slice(0, 3).map(look => look.image), () => goTo('profile'));
+    run(
+      'buildProfile',
+      selected.slice(0, 3).map(look => look.image),
+      () => goTo('profile'),
+    );
   }
 
   function generateOutfit() {
@@ -112,19 +145,27 @@ function Studio() {
       goTo('library');
       return;
     }
-    run('generateOutfit', closet.slice(0, 3).map(piece => piece.image), () => goTo('outfits'));
+    run(
+      'generateOutfit',
+      closet.slice(0, 3).map(piece => piece.image),
+      () => goTo('outfits'),
+    );
   }
 
   function togglePreference() {
     if (!outfit) return;
-    run('updateOutfit', outfit.pieces.slice(0, 3).map(piece => piece.image), () => {
-      setDemo(current => ({ ...current, prefersCasual: !current.prefersCasual }));
-      scroll.current?.scrollTo({ y: 0 });
-    });
+    run(
+      'updateOutfit',
+      outfit.pieces.slice(0, 3).map(piece => piece.image),
+      () => {
+        setSession(current => ({ ...current, prefersCasual: !current.prefersCasual }));
+        scroll.current?.scrollTo({ y: 0 });
+      },
+    );
   }
 
-  function resetDemo() {
-    setDemo(defaultDemo);
+  function resetSession() {
+    setSession(initialSession);
     goTo('library');
     setSheet(null);
   }
@@ -132,71 +173,147 @@ function Studio() {
   const action = (() => {
     switch (tab) {
       case 'library':
-        return <Primary title="Build my style profile" disabled={!selected.length} onPress={buildStyleProfile} />;
+        return (
+          <Primary title="Build my style profile" disabled={!selected.length} onPress={buildStyleProfile} />
+        );
       case 'profile':
-        return profile && <Primary title="See my closet" icon="shirt-outline" onPress={() => goTo('closet')} />;
+        return (
+          profile && <Primary title="See my closet" icon="shirt-outline" onPress={() => goTo('closet')} />
+        );
       case 'closet':
-        return <Primary title={profile ? 'Generate outfits' : 'Choose inspiration'} icon="sparkles-outline" onPress={generateOutfit} />;
+        return (
+          <Primary
+            title={profile ? 'Generate outfits' : 'Choose inspiration'}
+            icon="sparkles-outline"
+            onPress={generateOutfit}
+          />
+        );
       case 'outfits':
-        return casualOutfit && (
-          <Primary title={casualApplied ? 'Restore original match' : casualAction}
-            icon={casualApplied ? 'refresh-outline' : 'swap-horizontal'} onPress={togglePreference} />
+        return (
+          casualOutfit && (
+            <Primary
+              title={casualApplied ? 'Restore original match' : casualAction}
+              icon={casualApplied ? 'refresh-outline' : 'swap-horizontal'}
+              onPress={togglePreference}
+            />
+          )
         );
     }
   })();
 
   return (
-    <SafeAreaView style={s.safe} edges={['top', 'left', 'right']}>
+    <SafeAreaView style={styles.safe} edges={['top', 'left', 'right']}>
       <StatusBar style="dark" />
-      <View style={s.frame}>
-        <View style={s.header}>
-          <View style={s.brandGroup} accessibilityLabel="STYLEECHO">
-            <View style={s.brandMark}><Ionicons aria-hidden name="sparkles" size={16} color={colors.white} /></View>
-            <Text style={s.brand}>STYLEECHO</Text>
+      <View style={styles.frame}>
+        <View style={styles.header}>
+          <View style={styles.brandGroup} accessibilityLabel="STYLEECHO">
+            <View style={styles.brandMark}>
+              <Ionicons aria-hidden name="sparkles" size={16} color={colors.white} />
+            </View>
+            <Text style={styles.brand}>STYLEECHO</Text>
           </View>
-          <Pressable accessibilityRole="button" accessibilityLabel="Demo options" style={s.iconButton}
-            onPress={() => setSheet({ type: 'reset' })}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Session options"
+            style={styles.iconButton}
+            onPress={() => setSheet({ type: 'reset' })}
+          >
             <Ionicons aria-hidden name="ellipsis-horizontal" size={20} color={colors.wine} />
           </Pressable>
         </View>
-        <ScrollView key={tab} ref={scroll} style={s.scroll} contentContainerStyle={s.content} showsVerticalScrollIndicator={false}>
-          {tab === 'library' && <Library looks={looks} selectedIds={demo.selectedIds}
-            toggle={toggleLook} add={() => setSheet({ type: 'link' })} showCues={() => setSheet({ type: 'cues' })} />}
-          {tab === 'profile' && <StyleProfile selected={selected} profile={profile} edit={() => goTo('library')} />}
-          {tab === 'closet' && <Closet pieces={closet} filter={filter} setFilter={setFilter} added={demo.pieceAdded}
-            add={addPiece} showPiece={piece => setSheet({ type: 'piece', piece })} />}
-          {tab === 'outfits' && <Outfits outfit={outfit} prefersCasual={casualApplied} edit={() => goTo('library')}
-            showReasons={() => setSheet({ type: 'match' })} openPiece={piece => setSheet({ type: 'piece', piece })} />}
+        <ScrollView
+          key={tab}
+          ref={scroll}
+          style={styles.scroll}
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+        >
+          {tab === 'library' && (
+            <Library
+              looks={looks}
+              selectedIds={session.selectedLookIds}
+              canAddLook={!session.savedLook}
+              toggle={toggleLook}
+              add={() => setSheet({ type: 'link' })}
+              showCues={() => setSheet({ type: 'cues' })}
+            />
+          )}
+          {tab === 'profile' && (
+            <StyleProfile selected={selected} profile={profile} edit={() => goTo('library')} />
+          )}
+          {tab === 'closet' && (
+            <Closet
+              pieces={closet}
+              filter={filter}
+              setFilter={setFilter}
+              addedPieceId={session.addedPiece?.id}
+              add={addPiece}
+              showPiece={piece => setSheet({ type: 'piece', piece })}
+            />
+          )}
+          {tab === 'outfits' && (
+            <Outfits
+              outfit={outfit}
+              prefersCasual={casualApplied}
+              edit={() => goTo('library')}
+              showReasons={() => setSheet({ type: 'match' })}
+              openPiece={piece => setSheet({ type: 'piece', piece })}
+            />
+          )}
         </ScrollView>
-        {action && <View style={s.actionBar}>{action}</View>}
-        <View accessibilityRole="tablist" style={[s.tabs, { paddingBottom: Math.max(bottom, 5) }]}>
+        {action && <View style={styles.actionBar}>{action}</View>}
+        <View accessibilityRole="tablist" style={[styles.tabs, { paddingBottom: Math.max(bottom, 5) }]}>
           {tabs.map(item => (
-            <Pressable key={item.id} accessibilityRole="tab" aria-selected={tab === item.id}
-              style={s.tab} onPress={() => goTo(item.id)}>
-              <View style={[s.tabIcon, tab === item.id && s.tabIconActive]}>
-                <Ionicons aria-hidden name={item.icon} size={19} color={tab === item.id ? colors.wine : colors.muted} />
+            <Pressable
+              key={item.id}
+              accessibilityRole="tab"
+              aria-selected={tab === item.id}
+              style={styles.tab}
+              onPress={() => goTo(item.id)}
+            >
+              <View style={[styles.tabIcon, tab === item.id && styles.tabIconActive]}>
+                <Ionicons
+                  aria-hidden
+                  name={item.icon}
+                  size={19}
+                  color={tab === item.id ? colors.wine : colors.muted}
+                />
               </View>
-              <Text style={[s.tabLabel, tab === item.id && s.tabActive]}>{item.label}</Text>
+              <Text style={[styles.tabLabel, tab === item.id && styles.tabActive]}>{item.label}</Text>
             </Pressable>
           ))}
         </View>
       </View>
       {sheet && (
-        <Sheet title={sheet.type === 'piece' ? sheet.piece.name : sheet.type === 'progress' ? tasks[sheet.task].title : {
-          link: 'Add an outfit link',
-          cues: 'The four style cues',
-          match: 'Why it matches',
-          reset: 'Demo options',
-        }[sheet.type]} bottom={bottom} close={() => setSheet(null)}>
+        <Sheet
+          title={
+            sheet.type === 'piece'
+              ? sheet.piece.name
+              : sheet.type === 'progress'
+                ? tasks[sheet.task].title
+                : {
+                    link: 'Add an outfit link',
+                    cues: 'The four style cues',
+                    match: 'Why it matches',
+                    reset: 'Session options',
+                  }[sheet.type]
+          }
+          bottom={bottom}
+          close={() => setSheet(null)}
+        >
           {sheet.type === 'link' && <LookLinkForm submit={addLook} />}
-          {sheet.type === 'progress' && <DemoProgress key={sheet.task} task={sheet.task} media={sheet.media} complete={sheet.complete} />}
+          {sheet.type === 'progress' && (
+            <TaskProgress key={sheet.task} task={sheet.task} media={sheet.media} complete={sheet.complete} />
+          )}
           {sheet.type === 'cues' && <StyleCues />}
           {sheet.type === 'match' && outfit && <MatchReasons outfit={outfit} />}
           {sheet.type === 'piece' && <PieceDetails piece={sheet.piece} />}
-          {sheet.type === 'reset' && <>
-            <Text style={s.body}>Restore the starting looks, closet, and preferences for another take.</Text>
-            <SheetOption icon="refresh-outline" title="Reset demo" onPress={resetDemo} />
-          </>}
+          {sheet.type === 'reset' && (
+            <>
+              <Text style={styles.body}>Restore the initial style library, closet, and preferences.</Text>
+              <Primary icon="refresh-outline" title="Reset session" onPress={resetSession} />
+            </>
+          )}
         </Sheet>
       )}
     </SafeAreaView>
@@ -204,5 +321,9 @@ function Studio() {
 }
 
 export default function App() {
-  return <SafeAreaProvider><Studio /></SafeAreaProvider>;
+  return (
+    <SafeAreaProvider>
+      <StyleWorkspace />
+    </SafeAreaProvider>
+  );
 }
